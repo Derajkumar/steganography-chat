@@ -355,11 +355,41 @@ def extract_and_decrypt_message(css_text: str, passcode: str) -> str:
 # =========================================================================
 
 if __name__ == '__main__':
+    def write_response(res_dict):
+        try:
+            # We use ensure_ascii=True so any non-ASCII characters (e.g. emojis)
+            # are encoded into safely transferable \uXXXX sequences. This is 100%
+            # compliant with any OS locale or terminal stream settings.
+            json_str = json.dumps(res_dict, ensure_ascii=True)
+            sys.stdout.write(json_str + "\n")
+            sys.stdout.flush()
+        except Exception as e:
+            try:
+                sys.stderr.write(f"System execution failure on stdout write: {str(e)}\n")
+                sys.stderr.flush()
+            except Exception:
+                pass
+
     try:
-        input_data = sys.stdin.read()
-        if not input_data.strip():
-            print(json.dumps({"success": False, "error": "Empty input."}))
-            sys.exit(1)
+        # Robust handling of stdin across all platforms and spawner encodings
+        input_data = ""
+        try:
+            if hasattr(sys.stdin, 'buffer') and sys.stdin.buffer:
+                raw_bytes = sys.stdin.buffer.read()
+                if raw_bytes:
+                    input_data = raw_bytes.decode('utf-8', errors='replace')
+        except Exception:
+            pass
+            
+        if not input_data:
+            try:
+                input_data = sys.stdin.read()
+            except Exception:
+                pass
+                
+        if not input_data or not input_data.strip():
+            write_response({"success": False, "error": "Empty input."})
+            sys.exit(0)
             
         data = json.loads(input_data)
         action = data.get('action')
@@ -371,38 +401,38 @@ if __name__ == '__main__':
             theme = data.get('theme', 'cyber-neon')
             
             result = create_stego_css(sender, message, passcode, theme)
-            print(json.dumps({
+            write_response({
                 "success": True,
                 "cssContent": result['cssContent'],
                 "bitLength": result['bitLength']
-            }))
+            })
             
         elif action == 'decrypt':
             css_content = data.get('cssContent', '')
             passcode = data.get('passcode', '')
             
             decrypted = extract_and_decrypt_message(css_content, passcode)
-            print(json.dumps({
+            write_response({
                 "success": True,
                 "decryptedText": decrypted
-            }))
+            })
             
         elif action == 'health':
-            print(json.dumps({
+            write_response({
                 "success": True,
                 "status": "Python stego-cipher engine loaded."
-            }))
+            })
             
         else:
-            print(json.dumps({
+            write_response({
                 "success": False,
                 "error": f"Invalid action: {action}"
-            }))
+            })
             sys.exit(1)
             
     except Exception as e:
-        print(json.dumps({
+        write_response({
             "success": False,
             "error": str(e)
-        }))
+        })
         sys.exit(1)

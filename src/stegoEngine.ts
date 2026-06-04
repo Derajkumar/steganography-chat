@@ -1,13 +1,38 @@
 import crypto from 'crypto';
 import { execFileSync } from 'child_process';
 import path from 'path';
+import fs from 'fs';
+
+/**
+ * Searches for the stego_engine.py script in multiple possible directory structures
+ * to remain fully resilient regardless of how / where the process is spawned.
+ */
+function findStegoEnginePath(): string {
+  const possiblePaths = [
+    path.join(process.cwd(), 'stego_engine.py'),
+    path.join(__dirname, '..', 'stego_engine.py'),
+    path.join(__dirname, 'stego_engine.py'),
+    '/app/applet/stego_engine.py',
+    '/app/stego_engine.py',
+    './stego_engine.py'
+  ];
+
+  for (const p of possiblePaths) {
+    if (fs.existsSync(p)) {
+      return p;
+    }
+  }
+  // Default fallback to cwd
+  return path.join(process.cwd(), 'stego_engine.py');
+}
 
 /**
  * Invokes the secure Python steganography background engine (stego_engine.py)
  * passing data via stdin and reading JSON from stdout.
  */
 function runPythonStego(payload: any): any {
-  const scriptPath = path.join(process.cwd(), 'stego_engine.py');
+  const scriptPath = findStegoEnginePath();
+  const logPath = path.join(process.cwd(), 'python_error.log');
   const payloadStr = JSON.stringify(payload);
   
   try {
@@ -19,7 +44,13 @@ function runPythonStego(payload: any): any {
     });
     return JSON.parse(stdout);
   } catch (err: any) {
-    console.warn(" [stegoEngine] python3 runner failed, trying python fallback. Reason:", err.message);
+    const errorDetails = err.stderr ? err.stderr.toString() : err.message;
+    try {
+      fs.writeFileSync(logPath, `[python3 error] scriptPath=${scriptPath} cwd=${process.cwd()} dirname=${__dirname} status=${err.status} signal=${err.signal}\nMessage: ${err.message}\nStderr: ${errorDetails}\nStdout: ${err.stdout ? err.stdout.toString() : ''}\n`);
+    } catch (fsErr: any) {
+      console.error("Failed to write python_error.log:", fsErr.message);
+    }
+    console.warn(" [stegoEngine] python3 runner failed, trying python fallback. Reason:", errorDetails);
     try {
       // Fallback invocation with python
       const stdout = execFileSync('python', [scriptPath], {
@@ -29,8 +60,12 @@ function runPythonStego(payload: any): any {
       });
       return JSON.parse(stdout);
     } catch (fallbackErr: any) {
-      console.error("❌ [stegoEngine] Core Python security engine failed:", fallbackErr.message);
-      throw new Error(`Python Background Security Execution Failure: ${fallbackErr.message}`);
+      const fallbackDetails = fallbackErr.stderr ? fallbackErr.stderr.toString() : fallbackErr.message;
+      try {
+        fs.appendFileSync(logPath, `[python fallback error]\nMessage: ${fallbackErr.message}\nStderr: ${fallbackDetails}\n`);
+      } catch (fsErr) {}
+      console.error("❌ [stegoEngine] Core Python security engine failed:", fallbackDetails);
+      throw new Error(`Python Background Security Execution Failure: ${fallbackDetails}`);
     }
   }
 }
