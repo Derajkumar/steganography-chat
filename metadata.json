@@ -1,0 +1,6 @@
+{
+  "name": "CSS Steganography Multi-User Chat",
+  "description": "A secure multi-user chat room where messages are encrypted and hidden inside functional CSS stylesheets using EOL steganography.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
