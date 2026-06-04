@@ -1,9 +1,45 @@
 import crypto from 'crypto';
+import { execFileSync } from 'child_process';
+import path from 'path';
+
+/**
+ * Invokes the secure Python steganography background engine (stego_engine.py)
+ * passing data via stdin and reading JSON from stdout.
+ */
+function runPythonStego(payload: any): any {
+  const scriptPath = path.join(process.cwd(), 'stego_engine.py');
+  const payloadStr = JSON.stringify(payload);
+  
+  try {
+    // Attempt execution with python3 first
+    const stdout = execFileSync('python3', [scriptPath], {
+      input: payloadStr,
+      encoding: 'utf8',
+      maxBuffer: 15 * 1024 * 1024, // 15MB budget
+    });
+    return JSON.parse(stdout);
+  } catch (err: any) {
+    console.warn(" [stegoEngine] python3 runner failed, trying python fallback. Reason:", err.message);
+    try {
+      // Fallback invocation with python
+      const stdout = execFileSync('python', [scriptPath], {
+        input: payloadStr,
+        encoding: 'utf8',
+        maxBuffer: 15 * 1024 * 1024,
+      });
+      return JSON.parse(stdout);
+    } catch (fallbackErr: any) {
+      console.error("❌ [stegoEngine] Core Python security engine failed:", fallbackErr.message);
+      throw new Error(`Python Background Security Execution Failure: ${fallbackErr.message}`);
+    }
+  }
+}
 
 // The end-of-payload marker is sixteen 0s (representing two Null characters \0\0)
 // This is perfect because normal encrypted hex strings only contain [0-9a-f:] 
 // and will never contain consecutive null characters when converted to ASCII.
 const END_MARKER = '0000000000000000';
+
 
 /**
  * Derives a 256-bit key from a passcode using SHA-256
@@ -304,7 +340,7 @@ export function hideBitsInCss(cssText: string, bits: string): string {
 }
 
 /**
- * Encodes a secret message into a beautiful CSS stylesheet packet
+ * Encodes a secret message into a beautiful CSS stylesheet packet using Python child process
  */
 export function createStegoCss(
   senderName: string,
@@ -312,45 +348,66 @@ export function createStegoCss(
   passcode: string,
   themeKey: string
 ): { cssContent: string; bitLength: number } {
-  // 1. Encrypt text
-  const encryptedText = encryptText(message, passcode);
-  
-  // 2. Convert to bits
-  const encryptedBits = textToBits(encryptedText);
-  
-  // 3. Append the end of payload marker
-  const fullBitsPayload = encryptedBits + END_MARKER;
-  const bitLength = fullBitsPayload.length;
+  try {
+    const response = runPythonStego({
+      action: 'encrypt',
+      sender: senderName,
+      message,
+      passcode,
+      theme: themeKey
+    });
+    
+    if (response && response.success) {
+      return {
+        cssContent: response.cssContent,
+        bitLength: response.bitLength
+      };
+    } else {
+      throw new Error(response?.error || 'Unknown error response from Python engine.');
+    }
+  } catch (pyErr: any) {
+    console.warn("⚠️ [stegoEngine] Python runner failed. Falling back to local JS cipher loop... Error:", pyErr.message);
+    
+    // Fallback logic
+    // 1. Encrypt text
+    const encryptedText = encryptText(message, passcode);
+    
+    // 2. Convert to bits
+    const encryptedBits = textToBits(encryptedText);
+    
+    // 3. Append the end of payload marker
+    const fullBitsPayload = encryptedBits + END_MARKER;
+    const bitLength = fullBitsPayload.length;
 
-  // 4. Load base template
-  const theme = CSS_THEME_TEMPLATES[themeKey] || CSS_THEME_TEMPLATES['cyber-neon'];
-  let baseCss = `/* =========================================================================
-   CSS STEGANOGRAPHY DESIGN FILE PACKET
-   Sender: ${senderName}
-   Style Theme: ${theme.title}
-   Bit Capacity: ${bitLength}
-   ========================================================================= */\n\n`;
-  
-  baseCss += theme.css;
+    // 4. Load base template
+    const theme = CSS_THEME_TEMPLATES[themeKey] || CSS_THEME_TEMPLATES['cyber-neon'];
+    let baseCss = `/* =========================================================================
+     CSS STEGANOGRAPHY DESIGN FILE PACKET (JS FALLBACK)
+     Sender: ${senderName}
+     Style Theme: ${theme.title}
+     Bit Capacity: ${bitLength}
+     ========================================================================= */\n\n`;
+    
+    baseCss += theme.css;
 
-  // 5. Append sufficient semicolons by generating functional cell matrices
-  const baseSemicolons = (baseCss.match(/;/g) || []).length;
-  const missingSemicolons = bitLength - baseSemicolons;
-  
-  if (missingSemicolons > 0) {
-    baseCss += generateSemicolonPadding(missingSemicolons, themeKey);
-  } else {
-    // Standard minimum padding for visual graphics
-    baseCss += generateSemicolonPadding(100, themeKey);
+    // 5. Append sufficient semicolons by generating functional cell matrices
+    const baseSemicolons = (baseCss.match(/;/g) || []).length;
+    const missingSemicolons = bitLength - baseSemicolons;
+    
+    if (missingSemicolons > 0) {
+      baseCss += generateSemicolonPadding(missingSemicolons, themeKey);
+    } else {
+      baseCss += generateSemicolonPadding(100, themeKey);
+    }
+
+    // 6. Encode the bits into the semicolons
+    const stegoCssContent = hideBitsInCss(baseCss, fullBitsPayload);
+
+    return {
+      cssContent: stegoCssContent,
+      bitLength: bitLength
+    };
   }
-
-  // 6. Encode the bits into the semicolons
-  const stegoCssContent = hideBitsInCss(baseCss, fullBitsPayload);
-
-  return {
-    cssContent: stegoCssContent,
-    bitLength: bitLength
-  };
 }
 
 /**
@@ -387,15 +444,32 @@ export function extractBitsFromCss(cssText: string): string {
  * Extracts and decrypts the hidden message from a stego CSS stylesheet
  */
 export function extractAndDecryptMessage(cssText: string, passcode: string): string {
-  // 1. Recover bits
-  const bits = extractBitsFromCss(cssText);
-  if (!bits || bits.length === 0) {
-    throw new Error('No bits detected in this stylesheet.');
-  }
+  try {
+    const response = runPythonStego({
+      action: 'decrypt',
+      cssContent: cssText,
+      passcode
+    });
+    
+    if (response && response.success) {
+      return response.decryptedText;
+    } else {
+      throw new Error(response?.error || 'Unknown error response on decryption from Python engine.');
+    }
+  } catch (pyErr: any) {
+    console.warn("⚠️ [stegoEngine] Python decryption runner failed. Falling back to local JS cipher decryption... Error:", pyErr.message);
+    
+    // Fallback logic
+    // 1. Recover bits
+    const bits = extractBitsFromCss(cssText);
+    if (!bits || bits.length === 0) {
+      throw new Error('No bits detected in this stylesheet.');
+    }
 
-  // 2. Turn bits to encrypted text
-  const encryptedText = bitsToText(bits);
-  
-  // 3. Decrypt text using the passcode
-  return decryptText(encryptedText, passcode);
+    // 2. Turn bits to encrypted text
+    const encryptedText = bitsToText(bits);
+    
+    // 3. Decrypt text using the passcode
+    return decryptText(encryptedText, passcode);
+  }
 }
